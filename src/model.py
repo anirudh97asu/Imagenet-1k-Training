@@ -1,12 +1,8 @@
-<<<<<<< HEAD
 """ResNet-50 Model Implementation with Testing"""
-=======
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
 import torch
 import torch.nn as nn
 from torchsummary import summary
 
-<<<<<<< HEAD
 # ============================================================================
 # RESNET BUILDING BLOCKS
 # ============================================================================
@@ -19,15 +15,6 @@ class BasicBlock(nn.Module):
                                stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, 
-=======
-class BasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, 
-                               stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
                                stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
@@ -35,11 +22,7 @@ class BasicBlock(nn.Module):
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(
-<<<<<<< HEAD
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, 
-=======
-                nn.Conv2d(in_channels, out_channels, kernel_size=1,
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
                          stride=stride, bias=False),
                 nn.BatchNorm2d(out_channels)
             )
@@ -51,16 +34,11 @@ class BasicBlock(nn.Module):
         out = self.relu(out)
         return out
 
-<<<<<<< HEAD
-=======
-
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
 class Bottleneck(nn.Module):
     expansion = 4
     
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
-<<<<<<< HEAD
         
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
@@ -68,14 +46,6 @@ class Bottleneck(nn.Module):
                                stride=stride, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.conv3 = nn.Conv2d(out_channels, out_channels * self.expansion, 
-=======
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
-                               stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.conv3 = nn.Conv2d(out_channels, out_channels * self.expansion,
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
                                kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(out_channels * self.expansion)
         self.relu = nn.ReLU(inplace=True)
@@ -83,11 +53,7 @@ class Bottleneck(nn.Module):
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels * self.expansion:
             self.shortcut = nn.Sequential(
-<<<<<<< HEAD
                 nn.Conv2d(in_channels, out_channels * self.expansion, 
-=======
-                nn.Conv2d(in_channels, out_channels * self.expansion,
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
                          kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm2d(out_channels * self.expansion)
             )
@@ -100,12 +66,9 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
         return out
 
-<<<<<<< HEAD
 # ============================================================================
 # RESNET ARCHITECTURE
 # ============================================================================
-=======
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
 
 class ResNet(nn.Module):
     def __init__(self, block, num_blocks, num_classes=1000):
@@ -145,20 +108,13 @@ class ResNet(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.fc(x)
-<<<<<<< HEAD
         
         return x
 
-=======
-        return x
-
-
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230
 def resnet50(num_classes=1000):
     """ResNet-50: 3 + 4 + 6 + 3 = 16 bottleneck blocks"""
     return ResNet(Bottleneck, [3, 4, 6, 3], num_classes)
 
-<<<<<<< HEAD
 # ============================================================================
 # MAIN TESTING
 # ============================================================================
@@ -278,23 +234,3 @@ if __name__ == "__main__":
                 print(f"Input: {shape} -> Output: {out.shape}")
         
         print("\n✓ Forward pass test completed!")
-=======
-
-if __name__ == "__main__":
-    # model = resnet50(num_classes=1000)
-    # print(summary(model, input_size=(3, 224, 224)))
-    # x = torch.randn(2, 3, 224, 224)
-    # out = model(x)
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # build your model and move it to the same device
-    model = resnet50(num_classes=1000).to(device)
-    model.eval()  # optional, cleaner summary
-
-    # IMPORTANT: tell summary to use the same device
-    summary(model, (3, 224, 224), device=device)
-    #print(f"Output shape: {out.shape}")
-    print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-
->>>>>>> 187c58ee309c8f4697309b5e541874a0ee5e9230

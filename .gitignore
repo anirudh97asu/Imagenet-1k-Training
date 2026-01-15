@@ -1,5 +1,6 @@
 *.pt
 *.onnx
+*.pem
 to_do.txt
 # Python-generated files
 __pycache__/
