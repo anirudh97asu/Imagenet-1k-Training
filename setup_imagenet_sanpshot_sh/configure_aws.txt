@@ -1,0 +1,11 @@
+aws configure
+
+It will prompt you for:
+
+AWS Access Key ID: (your access key)
+AWS Secret Access Key: (your secret key)
+Default region name: us-east-2
+Default output format: json (or just press Enter)
+
+Alternative: Export as environment variables (if you don't want to save them):
+
