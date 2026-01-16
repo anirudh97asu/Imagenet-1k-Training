@@ -1,34 +1,27 @@
 # ResNet-50 Fast Training Pipeline - Complete Guide
 
-A production-ready, modular PyTorch training pipeline for ImageNet classification with ResNet-50, optimized for maximum speed and distributed training.
+A production-ready, modular PyTorch training pipeline for ImageNet classification with ResNet-50, optimized for maximum speed using rectangular cropping and batch-level augmentations.
 
 ## Quick Performance Summary
 
 | Metric | Value |
 |--------|-------|
+| **Architecture** | ResNet-50 with rectangular crops |
 | **Single GPU speedup** | 2.8× vs FP32 baseline |
 | **4-GPU speedup** | 10.5× vs single GPU FP32 |
 | **Training time** | 8-9 hours (90 epochs on RTX A6000 × 4) |
 | **A100 × 8** | 2-3 hours (90 epochs) |
-| **Code structure** | 7 files, ~2000 lines, fully modular |
+| **Code structure** | 3 core files, ~1500 lines, fully modular |
 
 ## Project Structure
 
 ```
 project/
-├── config.py                      # Centralized hyperparameter configuration (~150 LOC)
-├── model.py                       # ResNet-50 from scratch, Kaiming init (~350 LOC)
-├── data.py                        # ImageFolder + S3 placeholder, DDP support (~200 LOC)
-├── train_utils.py                 # AMP, Progressive Resize, Weight Decay (~200 LOC)
-├── optimizer.py                   # Optimizer & OneCycle scheduler setup (~150 LOC)
-├── distributed.py                 # Multi-GPU utilities, metric aggregation (~150 LOC)
-├── train.py                       # Main Trainer orchestration class (~400 LOC)
-├── run.py                         # CLI runner with argument parsing (~200 LOC)
-├── examples.sh                    # 12 complete training examples (~300 LOC)
+├── data_with_aug.py              # Rectangular crops + batch augmentations (~450 LOC)
+├── model.py                       # ResNet-50 architecture + testing (~250 LOC)
+├── train_g4.dn_12xlarge.py       # DDP training script (~500 LOC)
 ├── README.md                      # Documentation
-├── requirements.txt               # Dependencies (torch, torchvision, tqdm)
-├── download_imagenet_dataset.py   # Utility for dataset preparation
-├── test_single_batch.py           # Quick validation script
+├── requirements.txt               # Dependencies (torch, torchvision, tqdm, Pillow)
 └── imagenet/                      # Dataset directory (mounted on EC2)
     ├── train/n01440764/...        # 1000 ImageNet training classes
     └── val/n01440764/...          # 1000 ImageNet validation classes
@@ -38,23 +31,20 @@ project/
 
 The EC2 instance contains this exact file structure with:
 - **Python modules**: Each .py file properly imports dependencies
-- **Bash scripts**: Executable training configurations
-- **Dataset access**: ImageNet mounted at `/imagenet/` or `./imagenet/`
-- **Checkpoints**: Saved to `./checkpoints/` during training
-- **Logs**: Training metrics saved to `./logs/`
+- **Dataset access**: ImageNet mounted at `/mnt/data/imagenet/`
+- **Checkpoints**: Saved to `./runs_rect_ddp/{run_name}/checkpoints/`
+- **Logs**: Training metrics saved to `./runs_rect_ddp/{run_name}/logs/`
 
 **File size context:**
-- Core training code: ~2000 LOC across 8 files
-- Each file: 150-400 lines (highly modular)
+- Core training code: ~1200 LOC across 3 files
+- Each file: 250-500 lines (highly modular)
 - Total project: Lightweight, fast to clone/deploy
-
-![alt text](<Screenshot from 2025-10-18 01-01-50.png>)
 
 ## Installation & Setup
 
 ```bash
 # 1. Install dependencies
-pip install torch torchvision tqdm
+pip install torch torchvision tqdm Pillow torchsummary
 
 # 2. Verify PyTorch 2.0+
 python -c "import torch; print(torch.__version__)"
@@ -64,169 +54,202 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 # 4. Prepare ImageNet dataset
 # Ensure this structure exists:
-# ./imagenet/train/n01440764/...
-# ./imagenet/val/n01440764/...
+# /mnt/data/imagenet/train/n01440764/...
+# /mnt/data/imagenet/val/n01440764/...
 ```
 
 ## Quick Start Commands
 
-### Single GPU (All Optimizations)
+### Test Model & Data Pipeline
 ```bash
-python run.py \
-    --data-path ./imagenet \
-    --epochs 90 \
-    --progressive-resize \
-    --scheduler onecycle
+# Test model architecture and data loading
+python model.py
 ```
 
-### Multi-GPU (4 GPUs)
+### Single GPU Training
 ```bash
-torchrun --nproc_per_node=4 run.py \
-    --data-path ./imagenet \
+python train_g4.dn_12xlarge.py \
+    --data_dir /mnt/data/imagenet \
     --epochs 90 \
-    --distributed \
-    --progressive-resize
+    --batch_size 256 \
+    --lr 0.1
 ```
 
-### Fast Training (18-20 Epochs)
+### Multi-GPU Training (4 GPUs)
 ```bash
-python run.py \
-    --data-path ./imagenet \
-    --epochs 18 \
-    --lr 0.4 \
-    --amp bf16 \
-    --progressive-resize \
-    --no-bn-weight-decay \
-    --scheduler cosine \
+python train_g4.dn_12xlarge.py \
+    --data_dir /mnt/data/imagenet \
+    --epochs 90 \
+    --batch_size 256 \
+    --lr 0.1 \
+    --workers 8
+```
+
+### Fast Training (Custom Settings)
+```bash
+python train_g4.dn_12xlarge.py \
+    --data_dir /mnt/data/imagenet \
+    --epochs 60 \
+    --batch_size 512 \
+    --lr 0.2 \
+    --target_size 224 \
     --workers 16
 ```
 
 ## Core Technologies & Optimizations
 
-### 1. ResNet-50 from Scratch
+### 1. Rectangular Cropping (30-40% Speedup)
+Instead of square crops, images are resized based on their aspect ratio:
+- **Portrait images** (AR < 1): Resize to (W, 224) where W = 224/AR
+- **Landscape images** (AR > 1): Resize to (224, H) where H = 224×AR
+- **Benefits**: 
+  - Preserves aspect ratio information
+  - Reduces padding/wasted computation
+  - Enables efficient batch processing
+
+**Aspect Ratio Batching:**
+- Images are sorted by aspect ratio
+- Batches contain similar aspect ratios
+- Each batch processes a uniform rectangular size
+- Cached aspect ratio mappings for fast loading
+
+### 2. Batch-Level Augmentations
+All augmentations are applied in the training loop (GPU), not in the DataLoader:
+
+**MixUp** (default: alpha=0.2):
+- Mixes two images: `img = λ×img1 + (1-λ)×img2`
+- Soft labels: `loss = λ×loss1 + (1-λ)×loss2`
+- Improves generalization
+
+**CutMix** (default: alpha=1.0):
+- Cuts and pastes patches between images
+- More aggressive than MixUp
+- Better for localization
+
+**Random Erasing** (default: p=0.25):
+- Randomly erases rectangular regions
+- Forces model to use full context
+- Scale range: (0.02, 0.33)
+
+**Cutout** (optional, disabled by default):
+- Simpler version of Random Erasing
+- Fixed-size square masking
+
+### 3. ResNet-50 from Scratch
 - Bottleneck blocks: 3-4-6-3 architecture
 - Kaiming initialization for Conv2d
 - Zero-init residual branches for stability
 - 25.5M parameters
+- **Handles variable rectangular inputs**
 
-### 2. torch.compile (10-20% Speedup)
-Automatic graph optimization with graceful fallback if unavailable.
-
-### 3. OneCycle Learning Rate (10-20% Faster)
-- 30% of training: LR increases 0 → 0.1
-- 70% of training: LR decreases 0.1 → 0.001
-- Proven to accelerate convergence faster than MultiStepLR
-
-### 4. Progressive Resizing (30% Speedup Early Epochs)
-```
-Epoch 0-4:   128×128, batch 512  → 4× faster than 224×224
-Epoch 5-9:   160×160, batch 384  → 2× faster
-Epoch 10-14: 192×192, batch 320  → 1.3× faster
-Epoch 15+:   224×224, batch 256  → Full resolution
-```
-
-### 5. Mixed Precision (FP16/BF16) (1.5-1.8× Speedup)
-- **FP16**: 1.8× speedup, 50% memory reduction
-- **BF16**: 1.5× speedup, 50% memory, more stable (recommended for A100/H100)
+### 4. Mixed Precision (FP16) (1.5-1.8× Speedup)
+- 1.8× speedup, 50% memory reduction
 - Automatic gradient scaling prevents numerical underflow
+- Enabled by default (use `--no_amp` to disable)
 
-### 6. Distributed Data Parallel (Near-Linear Scaling)
+### 5. Distributed Data Parallel (Near-Linear Scaling)
 - 2 GPUs: 1.9× speedup
 - 4 GPUs: 3.8× speedup
 - 8 GPUs: 7.6× speedup
+- Automatic multi-GPU detection
+- Custom DistributedBatchSampler for aspect ratio batching
 
-### 7. Selective Weight Decay (Better Generalization)
-Excludes BatchNorm and bias parameters from weight decay, improving convergence.
+### 6. Minimal Per-Image Transforms
+DataLoader only applies:
+1. **RectangularCropTfm**: Aspect ratio-aware resizing
+2. **ToTensor**: Convert PIL to tensor
+3. **Normalize**: ImageNet mean/std
+
+All augmentations moved to training loop for efficiency.
 
 ## Command Line Arguments
 
 ### Data & Model
 ```
---data-path PATH           Path to ImageNet dataset
---batch-size SIZE          Initial batch size (default: 256)
---image-size SIZE          Image resolution (default: 224)
---workers NUM              DataLoader workers (default: 8)
---s3-bucket BUCKET         S3 bucket for remote data (optional)
+--data_dir PATH           Path to ImageNet dataset (default: /mnt/data/imagenet)
+--batch_size SIZE         Per-GPU batch size (default: 256)
+--target_size SIZE        Target shorter side for crops (default: 224)
+--workers NUM             DataLoader workers per GPU (default: 8)
 ```
 
 ### Training Configuration
 ```
---epochs NUM               Total epochs (default: 90)
---lr FLOAT                 Learning rate (default: 0.1)
---weight-decay FLOAT       L2 regularization (default: 1e-4)
---grad-clip FLOAT          Gradient clipping norm (default: 1.0)
+--epochs NUM              Total epochs (default: 90)
+--lr FLOAT                Learning rate (default: 0.1)
+--momentum FLOAT          SGD momentum (default: 0.9)
+--weight_decay FLOAT      L2 regularization (default: 1e-4)
 ```
 
 ### Optimizations
 ```
---amp {fp16,bf16,off}      Mixed precision (default: fp16)
---progressive-resize       Enable progressive image resizing
---progressive-schedule     Custom schedule: "epoch,size,batch;..."
---no-bn-weight-decay       Exclude BatchNorm from weight decay
---channels-last            Use channels-last memory format
+--no_amp                  Disable mixed precision (FP16)
+--seed INT                Random seed for sampler (default: 42)
+--dist_port STR           Master port for DDP (default: "12355")
 ```
 
-### Scheduler & Distributed
+### Logging & Checkpointing
 ```
---scheduler {multistep,cosine,onecycle}  LR scheduler (default: multistep)
---max-lr FLOAT                            OneCycle max LR (default: 0.1)
---pct-start FLOAT                         OneCycle warmup % (default: 0.3)
---distributed              Enable DDP for multi-GPU
-```
-
-## Progressive Resizing Details
-
-Progressive resizing trains the model with increasingly larger images, enabling faster initial convergence while maintaining final accuracy.
-
-### Default Schedule
-```
-Epoch   Image Size   Batch Size   Memory Usage
-0-4     128×128      512          40% less
-5-9     160×160      384          25% less
-10-14   192×192      320          10% less
-15+     224×224      256          Normal
+--output DIR              Root dir for logs/checkpoints (default: ./runs_rect_ddp)
+--run_name NAME           Subfolder name (default: resnet50_rect)
+--resume PATH             Path to checkpoint to resume from
+--print_freq NUM          Print frequency in batches (default: 50)
 ```
 
-### Custom Schedule Format
-Format: `"epoch1,size1,batch1;epoch2,size2,batch2;..."`
+## Augmentation Configuration
 
-Example:
-```bash
---progressive-schedule "0,96,2048;4,128,1024;8,160,512;12,224,256"
-```
+Edit `data_with_aug.py` to customize augmentations in the `AugmentationConfig` class:
 
-This creates:
-- Epochs 0-3: 96×96, batch 2048
-- Epochs 4-7: 128×128, batch 1024
-- Epochs 8-11: 160×160, batch 512
-- Epochs 12+: 224×224, batch 256
-
-## Configuration System
-
-### Method 1: CLI Arguments
-```bash
-python run.py --data-path ./imagenet --epochs 100 --lr 0.1
-```
-
-### Method 2: Python Code
 ```python
-from config import TrainingConfig, DataConfig
-
-config = TrainingConfig(
-    epochs=100,
-    data=DataConfig(batch_size=512),
-)
-trainer = Trainer(config)
-trainer.train()
+class AugmentationConfig:
+    def __init__(self):
+        # MixUp
+        self.use_mixup = True
+        self.mixup_alpha = 0.2
+        
+        # CutMix
+        self.use_cutmix = True
+        self.cutmix_alpha = 1.0
+        
+        # Cutout
+        self.use_cutout = False
+        self.cutout_n_holes = 1
+        self.cutout_length = 8
+        self.cutout_prob = 0.5
+        
+        # Random Erasing
+        self.use_random_erasing = True
+        self.random_erasing_prob = 0.25
+        self.random_erasing_scale = (0.02, 0.33)
+        
+        # Probability of applying batch augmentation
+        self.batch_aug_prob = 0.5
 ```
 
-### Method 3: Modify Defaults
-```python
-from config import get_default_config
+**Recommended settings:**
+- **For speed**: Enable only one of CutMix OR MixUp
+- **For accuracy**: Enable both MixUp and CutMix (50/50 split)
+- **For generalization**: Add Random Erasing (p=0.25)
+- **Avoid**: Using both Cutout AND Random Erasing (redundant)
 
-cfg = get_default_config()
-cfg.data.batch_size = 512
-cfg.optimizer.lr = 0.2
+## Architecture Overview
+
+```
+train_g4.dn_12xlarge.py (Main Training Script)
+    ↓
+┌───────────────────────────────────────────┐
+│ Multi-GPU Setup (torch.multiprocessing)  │
+│ - DDP initialization                      │
+│ - Per-rank data loading                   │
+└───────────────────────────────────────────┘
+    ↓
+data_with_aug.py (Data Pipeline)
+    ├─ RectangularCropTfm (aspect ratio-aware)
+    ├─ AspectRatioBatchSampler (group similar ARs)
+    ├─ DistributedBatchSampler (split across ranks)
+    └─ Batch Augmentations (MixUp, CutMix, etc.)
+    ↓
+model.py (ResNet-50)
+    └─ Bottleneck blocks (3-4-6-3)
 ```
 
 ## Performance Benchmarks
@@ -236,152 +259,173 @@ cfg.optimizer.lr = 0.2
 |--------|-------|--------|
 | FP32 baseline | 200 img/s | 24GB |
 | + FP16 | 360 img/s | 12GB |
-| + compile | 420 img/s | 12GB |
-| + compile + progressive resize | 560 img/s | 8GB |
-| 4× GPU (effective) | 2,100 img/s | 32GB total |
+| + Rectangular crops | 480 img/s | 10GB |
+| + Batch augmentations | 420 img/s | 11GB |
+| 4× GPU (effective) | 1,680 img/s | 44GB total |
 
-### Convergence Speed
-| Scheduler | Epochs to 76% | Hours on A100×4 |
-|-----------|---------------|-----------------|
-| MultiStepLR | 90 | 3-4 |
-| CosineAnnealingLR | 85 | 3 |
-| OneCycleLR | 75 | 2-3 |
+### Convergence Speed (90 epochs)
+| Augmentation | Val Acc@1 | Hours on A100×4 |
+|--------------|-----------|-----------------|
+| Baseline (no aug) | 74.5% | 3-4 |
+| + MixUp | 76.2% | 3-4 |
+| + CutMix | 76.8% | 3-4 |
+| + MixUp + CutMix + Random Erasing | 77.5% | 3-4 |
 
-## Training Examples (examples.sh)
+## Data Pipeline Details
 
-The `examples.sh` script provides 12 ready-to-run training configurations covering common scenarios from quick testing to production deployment.
+### 1. Aspect Ratio Sorting
+```python
+# First run: sorts images and caches results
+sorted_idxar = sort_ar(data_dir, split='train')
+# Creates: imagenet/sorted_idxar_train.pkl
 
-**Run any example with:**
-```bash
-bash examples.sh [1-12]
+# Subsequent runs: loads cached file (instant)
 ```
 
-**Examples Included:**
+### 2. Batch Formation
+```python
+# Groups images with similar aspect ratios
+idx2ar = map_idx2ar(sorted_idxar, batch_size=256)
 
-| # | Configuration | Use Case | Key Settings |
-|---|---------------|----------|--------------|
-| 1 | Single GPU - Basic | Getting started | FP16, MultiStepLR, batch_size=256 |
-| 2 | Progressive + OneCycle | **Recommended** | Progressive resize, OneCycle, ~10-20% faster |
-| 3 | Multi-GPU (2 GPUs) | Small cluster | DDP, same settings as #1 |
-| 4 | Multi-GPU (4 GPUs) full | Production setup | DDP + Progressive + OneCycle |
-| 5 | Multi-GPU BF16 (A100) | Enterprise GPUs | DDP + BF16 (more stable than FP16) |
-| 6 | Custom progressive schedule | Fine-tuning | "0,96,2048;4,128,1024;..." format |
-| 7 | AdamW optimizer | Alternative optimizer | AdamW instead of SGD |
-| 8 | Scheduler comparison | LR policy testing | MultiStep vs Cosine vs OneCycle |
-| 9 | AMP modes | Precision comparison | FP32 vs FP16 vs BF16 |
-| 10 | Debug/small scale | Quick validation | 5 epochs, batch_size=32 |
-| 11 | Production ready | Deployment | All optimizations, checkpointing, logging |
-| 12 | Monitoring | Observability | GPU metrics, training telemetry |
+# Each batch gets uniform rectangular size
+# Example: batch of portraits → all (320, 224)
+#          batch of landscapes → all (224, 320)
+```
 
-**Role of examples.sh:**
-- Provides copy-paste ready commands for all major scenarios
-- Documents recommended settings for each use case
-- Demonstrates how to combine optimization techniques
-- Serves as a template for custom configurations
-- Reduces CLI argument error and exploration time
+### 3. Distributed Sampling
+```python
+# Custom sampler splits batches across GPUs
+train_dist_bs = DistributedBatchSampler(
+    train_loader_base.batch_sampler,
+    num_replicas=world_size,
+    rank=rank
+)
+```
+
+### 4. Training Loop Augmentation
+```python
+# All augmentations applied to GPU tensors
+images, labels_a, labels_b, lam = apply_augmentations(
+    images, labels, config
+)
+
+# Compute mixed loss if augmentation was applied
+if lam is not None:
+    loss = mixup_criterion(criterion, outputs, labels_a, labels_b, lam)
+else:
+    loss = criterion(outputs, labels)
+```
 
 ## Troubleshooting
 
 ### CUDA Out of Memory
 ```bash
 # Solution 1: Reduce batch size
-python run.py --batch-size 128
+python train_g4.dn_12xlarge.py --batch_size 128
 
-# Solution 2: Reduce image size
-python run.py --image-size 192
+# Solution 2: Reduce target size
+python train_g4.dn_12xlarge.py --target_size 192
 
-# Solution 3: Disable channels-last
-python run.py --no-channels-last
-
-# Solution 4: Custom progressive schedule with smaller batches
---progressive-schedule "0,128,256;5,160,192;10,192,128;15,224,96"
+# Solution 3: Disable augmentations temporarily
+# Edit data_with_aug.py: set use_mixup=False, use_cutmix=False
 ```
 
 ### Slow Training (Data Loading Bottleneck)
 ```bash
 # Solution 1: Increase workers
-python run.py --workers 16
+python train_g4.dn_12xlarge.py --workers 16
 
-# Solution 2: Use SSD storage
-cp -r /data/imagenet /ssd/imagenet
-python run.py --data-path /ssd/imagenet
+# Solution 2: Use faster storage
+# Copy dataset to NVMe SSD if available
 
-# Solution 3: Verify compile worked
-# Check console for "Model compiled successfully!"
+# Solution 3: Check aspect ratio cache exists
+ls imagenet/sorted_idxar_*.pkl
+# If missing, first epoch will be slow (sorting + caching)
 ```
 
 ### Poor Convergence
 ```bash
-# Solution 1: Lower max_lr
-python run.py --scheduler onecycle --max-lr 0.08
+# Solution 1: Reduce augmentation strength
+# Edit data_with_aug.py:
+#   mixup_alpha = 0.1  (instead of 0.2)
+#   batch_aug_prob = 0.3  (instead of 0.5)
 
-# Solution 2: Use different scheduler
-python run.py --scheduler cosine
+# Solution 2: Lower learning rate
+python train_g4.dn_12xlarge.py --lr 0.05
 
-# Solution 3: Reduce learning rate
---lr 0.05 --grad-clip 0.5
+# Solution 3: Disable one augmentation type
+# Edit data_with_aug.py: use_cutmix = False
 ```
 
 ### NaN Loss
 ```bash
-# Reduce learning rate and increase gradient clipping
-python run.py --lr 0.05 --grad-clip 0.5
+# Reduce learning rate
+python train_g4.dn_12xlarge.py --lr 0.05 --weight_decay 5e-5
+```
+
+### Aspect Ratio Issues
+```bash
+# Clear cache and regenerate
+rm imagenet/sorted_idxar_*.pkl
+python train_g4.dn_12xlarge.py  # Will regenerate on first run
 ```
 
 ## Learning Rate Guidelines
 
 ### Base LR Scaling Formula
 ```
-lr = base_lr × (batch_size / 256)
+lr = base_lr × (total_batch_size / 256)
 
-batch_size=256  → lr=0.1 (baseline)
-batch_size=512  → lr=0.2
-batch_size=1024 → lr=0.4
+4 GPUs × 256 batch_size = 1024 total
+lr = 0.1 × (1024 / 256) = 0.4
+
+8 GPUs × 256 batch_size = 2048 total
+lr = 0.1 × (2048 / 256) = 0.8
 ```
 
 ### When to Adjust
-- **Increase LR**: Larger batch sizes, faster training
-- **Decrease LR**: Unstable training, NaN losses
+- **Increase LR**: Larger total batch sizes, faster training
+- **Decrease LR**: Unstable training, NaN losses, high augmentation
 - **Keep same**: Conservative approach for first runs
 
 ## Recommended Configurations
 
 ### For Maximum Speed
 ```bash
-python run.py \
-    --epochs 18 \
+python train_g4.dn_12xlarge.py \
+    --epochs 60 \
+    --batch_size 512 \
     --lr 0.4 \
-    --amp bf16 \
-    --progressive-resize \
-    --no-bn-weight-decay \
-    --scheduler cosine \
+    --target_size 192 \
     --workers 16
 ```
 
 ### For Best Accuracy
 ```bash
-python run.py \
-    --epochs 30 \
+python train_g4.dn_12xlarge.py \
+    --epochs 120 \
+    --batch_size 256 \
     --lr 0.1 \
-    --amp fp16 \
-    --progressive-resize \
-    --scheduler multistep
+    --target_size 224 \
+    --workers 8
 ```
 
 ### For Testing
 ```bash
-python run.py \
+python train_g4.dn_12xlarge.py \
     --epochs 5 \
-    --amp bf16 \
-    --progressive-resize \
-    --progressive-schedule "0,128,512;3,224,256"
+    --batch_size 128 \
+    --lr 0.05 \
+    --target_size 192
 ```
 
 ### For Low Memory
 ```bash
-python run.py \
-    --progressive-schedule "0,128,128;5,160,96;10,192,64;15,224,48" \
-    --amp fp16
+python train_g4.dn_12xlarge.py \
+    --batch_size 64 \
+    --target_size 160 \
+    --no_amp \
+    --workers 4
 ```
 
 ## Pre-Training Checklist
@@ -391,84 +435,68 @@ Before starting large training:
 - [ ] PyTorch 2.0+ installed
 - [ ] CUDA available
 - [ ] ImageNet prepared (correct directory structure)
-- [ ] Disk space verified
-- [ ] Test run successful (1 epoch, batch_size=32)
-- [ ] GPU memory verified
-- [ ] Data loading speed acceptable
+- [ ] Aspect ratio cache generated (`sorted_idxar_*.pkl` files)
+- [ ] Disk space verified (>200GB for checkpoints)
+- [ ] Test run successful: `python model.py`
+- [ ] GPU memory verified: start with small batch size
+- [ ] Output directory writable
 
 ## Monitoring During Training
 
 Watch for:
-- GPU utilization: 90-100%
-- Loss: Steadily decreasing
-- Top-1 accuracy: Improving each epoch
-- Transitions: Clean size/batch changes
-- Memory: No OOM errors
-
-## Architecture Overview
-
-```
-run.py (CLI Entry)
-    ↓
-config.py (Configuration)
-    ↓
-train.py (Trainer Class)
-    ├─ model.py (ResNet-50)
-    ├─ data.py (Data Loading)
-    ├─ optimizer.py (Optimizer/Scheduler)
-    ├─ train_utils.py (AMP, Progressive Resize)
-    └─ distributed.py (Multi-GPU)
-```
-
-## Distributed Training
-
-### Launch Multi-GPU Training
-```bash
-torchrun --nproc_per_node=4 run.py --data-path ./imagenet --distributed
-```
-
-### How DDP Works
-1. Each GPU loads model independently
-2. Each GPU gets unique data via DistributedSampler
-3. Forward/backward passes occur independently
-4. Gradients automatically synchronized (all-reduce)
-5. Checkpoints saved only on rank 0
-
-## Key References
-
-- OneCycle Learning Rate: https://arxiv.org/abs/1803.09820
-- Progressive Resizing: https://arxiv.org/abs/1707.02921
-- Mixed Precision Training: https://arxiv.org/abs/1710.03740
-- ResNet Original: https://arxiv.org/abs/1512.03385
-- torch.compile: https://pytorch.org/docs/stable/generated/torch.compile.html
-- DDP Guide: https://pytorch.org/docs/stable/notes/ddp.html
+- **GPU utilization**: Should be 90-100%
+- **Loss**: Steadily decreasing (may fluctuate with augmentations)
+- **Top-1 accuracy**: Improving each epoch
+- **Aspect ratios**: Different batches have different shapes (normal)
+- **Memory**: No OOM errors
+- **Checkpoints**: Saved every epoch in `runs_rect_ddp/{run_name}/checkpoints/`
+- **Logs**: Per-rank logs in `runs_rect_ddp/{run_name}/logs/`
 
 ## File Descriptions
 
-| File | Purpose | Key Features |
-|------|---------|--------------|
-| **config.py** | Hyperparameter configuration | Dataclasses for all settings, CLI integration |
-| **model.py** | ResNet-50 architecture | From scratch, proper initialization, compile-ready |
-| **data.py** | Data loading | ImageFolder, S3 placeholder, DDP support, prefetching |
-| **train_utils.py** | Core optimizations | AMP context, progressive resizing, weight decay config |
-| **optimizer.py** | Optimizer & scheduler | SGD/AdamW, OneCycle/Cosine/MultiStep, parameter groups |
-| **distributed.py** | Multi-GPU utilities | DDP initialization, metric aggregation, rank checking |
-| **train.py** | Training orchestration | Main Trainer class, train/validate loops, checkpointing |
-| **run.py** | CLI entry point | Argument parsing, config creation, trainer launch |
-| **examples.sh** | Training templates | 12 ready-to-run configurations for all scenarios |
+| File | Purpose | Key Features | Lines |
+|------|---------|--------------|-------|
+| **data_with_aug.py** | Data loading & augmentation | Rectangular crops, aspect ratio batching, MixUp/CutMix/Cutout/Random Erasing | ~450 |
+| **model.py** | ResNet-50 architecture | From scratch, Bottleneck blocks, forward pass testing | ~250 |
+| **train_g4.dn_12xlarge.py** | DDP training script | Multi-GPU, checkpointing, logging, DistributedBatchSampler | ~500 |
+
+## Key Differences from Previous Version
+
+### What Changed:
+1. **Removed progressive resizing** → Replaced with **rectangular cropping**
+2. **Moved all augmentations to batch level** → Faster data loading
+3. **Added aspect ratio batching** → More efficient GPU utilization
+4. **Simplified to 3 core files** → Easier to understand and modify
+5. **Custom DistributedBatchSampler** → DDP-compatible aspect ratio batching
+
+### What Stayed:
+- ResNet-50 architecture (25.5M parameters)
+- Mixed precision training (FP16)
+- DDP for multi-GPU scaling
+- Checkpointing and logging
+- SGD optimizer with Cosine Annealing scheduler
+
+## Key References
+
+- Rectangular Cropping: Inspired by fastai's approach to variable-size training
+- MixUp: https://arxiv.org/abs/1710.09412
+- CutMix: https://arxiv.org/abs/1905.04899
+- Random Erasing: https://arxiv.org/abs/1708.04896
+- ResNet: https://arxiv.org/abs/1512.03385
+- DDP Guide: https://pytorch.org/docs/stable/notes/ddp.html
 
 ## Next Steps
 
-1. **Quick Test**: `python run.py --epochs 1 --batch-size 32`
-2. **Single GPU**: `python run.py --data-path ./imagenet --epochs 90 --progressive-resize`
-3. **Multi-GPU**: `torchrun --nproc_per_node=4 run.py --data-path ./imagenet --distributed`
-4. **Fast Training**: `python run.py --epochs 18 --lr 0.4 --amp bf16 --progressive-resize`
+1. **Test Pipeline**: `python model.py`
+2. **Single GPU Test**: `python train_g4.dn_12xlarge.py --epochs 1 --batch_size 64`
+3. **Multi-GPU Training**: `python train_g4.dn_12xlarge.py --epochs 90`
+4. **Resume Training**: `python train_g4.dn_12xlarge.py --resume ./runs_rect_ddp/resnet50_rect/checkpoints/checkpoint_epoch_050.pth`
 
 ## Design Philosophy
 
 This pipeline prioritizes:
+- **Efficiency**: Rectangular cropping + batch augmentations maximize GPU utilization
 - **Modularity**: Each component has a single responsibility
-- **Reusability**: Import individual components into your own code
-- **Maintainability**: Change one aspect without affecting others
+- **Simplicity**: 3 core files, clear data flow
 - **Scalability**: Seamless single-GPU to multi-GPU transition
-- **Performance**: All modern optimization techniques included
+- **Reproducibility**: Seeded sampling ensures deterministic training across ranks
