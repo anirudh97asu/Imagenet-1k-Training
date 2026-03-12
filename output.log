@@ -1,0 +1,17 @@
+Loading model architecture...
+Loading weights from /home/ec2-user/resnet50_imagenet_1k_model.pt...
+/home/ec2-user/.venv/lib64/python3.9/site-packages/torch/serialization.py:1493: UserWarning: 'torch.load' received a zip file that looks like a TorchScript archive dispatching to 'torch.jit.load' (call 'torch.jit.load' directly to silence this warning)                                                                                                                                    ad' (call 'torch.jit.load' 
+  warnings.warn(
+Model loaded successfully on cpu
+Loaded 1000 class labels from /home/ec2-user/imagenet_1k_classes.txt
+Loading cached aspect ratios from /mnt/data/imagenet/sorted_idxar_val.pkl
+Analyzing 50000 validation images...
+Using device: cpu
+Processing batches: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1563/1563 [5:14:10<00:00, 12.06s/it]                                                                                                                                                                             0<00:00, 12.06s/it]
+
+Analysis complete!
+Total images processed: 50000
+Total incorrect (top-5): 3738
+Saved misclassifications: 373 (every 10th)
+Predictions saved to analysis_output/predictions.csv
+Classification report saved to analysis_output/classification_report.csv
